@@ -35,18 +35,24 @@ services:
       timeout: 20s
       retries: 3
 
-  standalone:
-    container_name: milvus-standalone
+  milvus:
+    container_name: milvus-milvus
     image: milvusdb/milvus:v2.4.11
-    command: ["milvus", "run", "standalone"]
+    command: ["milvus", "run", "milvus"]
     security_opt:
     - seccomp:unconfined
     environment:
       ETCD_ENDPOINTS: etcd:2379
       MINIO_ADDRESS: minio:9000
     volumes:
-      - ./milvus/milvus.yaml:/milvus/configs/milvus.yaml
-      - ${DOCKER_VOLUME_DIRECTORY:-.}/volumes/milvus:/var/lib/milvus
+      - type: bind
+        source: ./milvus/milvus.yaml
+        target: /milvus/configs/milvus.yaml
+      - type: volume
+        source: milvus-data
+        target: /var/lib/milvus
+        volume:
+          nocopy: true
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
       interval: 30s
@@ -61,20 +67,30 @@ services:
       - "minio"
 
   attu:
-    container_name: attu
+    container_name: milvus-attu
     image: zilliz/attu:v2.4
     security_opt:
       - seccomp:unconfined
     environment:
-      MILVUS_URL: standalone:19530
+      MILVUS_URL: milvus:19530
     ports:
       - "8000:3000"
     depends_on:
-      - "standalone"
+      - "milvus"
+
+  redis:
+    container_name: redis
+    image: redis:7.4.1
+    security_opt:
+      - seccomp:unconfined
+    restart: always
+    command: redis-server --save 20 1 --loglevel warning
+    volumes:
+      - redis-data:/data
 
   # Control Plane container also includes message queue (for now)
   control-plane:
-    container_name: control-plane
+    container_name: llama-deploy-control-plane
     image: localhost/jane-the-llama
     security_opt:
       - seccomp:unconfined
@@ -89,7 +105,7 @@ services:
       - config
 
   workflow:
-    container_name: workflow
+    container_name: llama-deploy-workflow
     image: localhost/jane-the-llama
     security_opt:
       - seccomp:unconfined
@@ -102,7 +118,7 @@ services:
     secrets:
       - config
     depends_on:
-      - standalone
+      - milvus
       - control-plane
 
 secrets:
@@ -112,3 +128,8 @@ secrets:
 networks:
   default:
     name: milvus
+
+volumes:
+  milvus-data:
+  redis-data:
+

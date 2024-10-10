@@ -17,7 +17,7 @@ llama-index-embeddings-ibm = "^0.2.0"
 llama-index-vector-stores-milvus = "^0.2.3"
 llama-index-llms-ibm = "^0.2.1"
 python-configuration = "^0.12.1"
-llama-deploy = {git = "https://github.com/jonpspri/llama_deploy.git", rev = "cors"}
+llama-deploy = {git = "https://github.com/jonpspri/llama_deploy.git", rev = "context"}
 
 [build-system]
 requires = ["poetry-core"]
