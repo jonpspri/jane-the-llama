@@ -9,7 +9,11 @@ services:
       - ETCD_QUOTA_BACKEND_BYTES=4294967296
       - ETCD_SNAPSHOT_COUNT=50000
     volumes:
-      - ${DOCKER_VOLUME_DIRECTORY:-.}/volumes/etcd:/etcd
+      - type: volume
+        source: etcd-data
+        target: /etcd
+        volume:
+          nocopy: true
     command: etcd -advertise-client-urls=http://127.0.0.1:2379 -listen-client-urls http://0.0.0.0:2379 --data-dir /etcd
     healthcheck:
       test: ["CMD", "etcdctl", "endpoint", "health"]
@@ -27,7 +31,11 @@ services:
       - "9001:9001"
       - "9000:9000"
     volumes:
-      - ${DOCKER_VOLUME_DIRECTORY:-.}/volumes/minio:/minio_data
+      - type: volume
+        source: minio-data
+        target: /minio_data
+        volume:
+          nocopy: true
     command: minio server /minio_data --console-address ":9001"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
@@ -36,9 +44,9 @@ services:
       retries: 3
 
   milvus:
-    container_name: milvus-milvus
+    container_name: milvus
     image: milvusdb/milvus:v2.4.11
-    command: ["milvus", "run", "milvus"]
+    command: ["milvus", "run", "standalone"]
     security_opt:
     - seccomp:unconfined
     environment:
@@ -74,7 +82,7 @@ services:
     environment:
       MILVUS_URL: milvus:19530
     ports:
-      - "8000:3000"
+      - "8000:7999"
     depends_on:
       - "milvus"
 
@@ -85,41 +93,30 @@ services:
       - seccomp:unconfined
     restart: always
     command: redis-server --save 20 1 --loglevel warning
+    ports:
+      - "6379:6379"
     volumes:
-      - redis-data:/data
+      - type: volume
+        source: redis-data
+        target: /data
+        volume:
+          nocopy: true
 
-  # Control Plane container also includes message queue (for now)
-  control-plane:
-    container_name: llama-deploy-control-plane
+  jane:
+    container_name: jane
     image: localhost/jane-the-llama
     security_opt:
       - seccomp:unconfined
-    command: "python3 -m jane_the_llama.control_plane"
     environment:
-      CONTROL_PLANE_HOST: control-plane
-      CONTROL_PLANE_CORS_ORIGINS: '["*"]'
-      SIMPLE_MESSAGE_QUEUE_HOST: control-plane
+      JANE_REDIS_HOST: redis
+      JANE_MILVUS_HOST: milvus
     ports:
       - "8001:8000"
     secrets:
       - config
-
-  workflow:
-    container_name: llama-deploy-workflow
-    image: localhost/jane-the-llama
-    security_opt:
-      - seccomp:unconfined
-    command: "python3 -m jane_the_llama.rag_workflow"
-    environment:
-      WORKFLOW_SERVICE_HOST: workflow
-      WORKFLOW_SERVICE_PORT: 8002
-      CONTROL_PLANE_HOST: control-plane
-    restart: "on-failure:30"
-    secrets:
-      - config
     depends_on:
       - milvus
-      - control-plane
+      - redis
 
 secrets:
   config:
@@ -127,9 +124,11 @@ secrets:
 
 networks:
   default:
-    name: milvus
+    name: jane
 
 volumes:
   milvus-data:
   redis-data:
+  etcd-data:
+  minio-data:
 

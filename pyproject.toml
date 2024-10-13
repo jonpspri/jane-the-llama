@@ -17,7 +17,9 @@ llama-index-embeddings-ibm = "^0.2.0"
 llama-index-vector-stores-milvus = "^0.2.3"
 llama-index-llms-ibm = "^0.2.1"
 python-configuration = "^0.12.1"
-llama-deploy = {git = "https://github.com/jonpspri/llama_deploy.git", rev = "context"}
+fastapi = {extras = ["standard"], version = "^0.115.0"}
+pydantic-settings = "^2.5.2"
+redis = "^5.1.1"
 
 [build-system]
 requires = ["poetry-core"]
