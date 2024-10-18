@@ -1,15 +1,10 @@
-from config import ConfigurationSet, config_from_json
 from fastapi import FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
-from os import path
-from pydantic import BaseModel, Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
 from redis import Redis
-from typing import Optional
-from uuid import uuid4
 
 import asyncio
 import logging
+import uvicorn
 
 from llama_index.core import VectorStoreIndex
 from llama_index.core.base.llms.types import ChatMessage, MessageRole
@@ -18,29 +13,10 @@ from llama_index.embeddings.ibm import WatsonxEmbeddings
 from llama_index.llms.ibm import WatsonxLLM
 from llama_index.vector_stores.milvus import MilvusVectorStore
 
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
-
-class JaneSettings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix='JANE_')
-
-    milvus_host: str = 'localhost'
-    milvus_port: int = 19530
-    redis_host: str = 'localhost'
-    redis_port: int = 6379
-
-    @property
-    def milvus_url(self) -> str:
-        return f"http://{self.milvus_host}:{self.milvus_port}"
+from .settings import JaneSettings
+from .types import Session
 
 settings = JaneSettings()
-
-script_dir = path.dirname(path.abspath(__file__))
-config = ConfigurationSet(
-        config_from_json(path.join(script_dir, './config.json'), read_from_file=True, ignore_missing_paths=True),
-        config_from_json(path.join(script_dir, '../config.json'), read_from_file=True, ignore_missing_paths=True),
-        config_from_json('/run/secrets/config', read_from_file=True, ignore_missing_paths=True),
-        )
 
 TIMEOUT = 1000 * 60 * 60 * 24
 
@@ -48,10 +24,6 @@ TIMEOUT = 1000 * 60 * 60 * 24
 #  The redis is going to be divided into namespaces:
 #    "sessions" for core session data
 #
-class Session(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid4()))
-    chat_history: Optional[list[ChatMessage]] = []
-
 redis = Redis(host=settings.redis_host,
                   port=settings.redis_port,
                   protocol=3,
@@ -64,28 +36,26 @@ responses = {}
 #  Preallocate as much of the environment as we can to reduce load during
 #  the chat cycle
 #
+
+#  TODO:  Model IDs should be configurable to avoid code migrations
 llm = WatsonxLLM(
                 model_id="meta-llama/llama-3-2-90b-vision-instruct",
                 url="https://us-south.ml.cloud.ibm.com",
-                apikey=config['watsonx_apikey'],
-                project_id="6a51b5ec-ff0d-4cca-9f25-7561888cd9cd",
+                apikey=settings.watsonx_apikey,
+                project_id=settings.watsonx_project_id,
                 max_new_tokens=200
                 )
-logger.warn(f"Connecting to Milvus at {settings.milvus_url} as {config['milvus_username']}")
 vector_store = MilvusVectorStore(
                 uri=settings.milvus_url,
-                token=':'.join([
-                     config['milvus_username'],
-                     config['milvus_password']
-                ]),
+                token=settings.milvus_token,
                 dim=384, overwrite=False)
 index = VectorStoreIndex.from_vector_store(
                     vector_store=vector_store,
                     embed_model=WatsonxEmbeddings(
                         model_id="ibm/slate-30m-english-rtrvr-v2",
                         url="https://us-south.ml.cloud.ibm.com",
-                        apikey=config['watsonx_apikey'],
-                        project_id=config['watsonx_project_id'],
+                        apikey=settings.watsonx_apikey,
+                        project_id=settings.watsonx_project_id,
                         truncate_input_tokens=512,
                         embed_batch_size=20
                     ))
@@ -102,6 +72,10 @@ app.add_middleware(
     allow_headers=["*"],
     expose_headers=["Location"],
 )
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
+
 @app.post("/sessions", status_code=201)
 def create_session(response: Response) -> Session:
     session = Session()
@@ -164,7 +138,10 @@ async def read_chat_message_response(session_id: str, index: int) -> ChatMessage
         raise HTTPException(status_code=404, detail=f"Response index {index} not found")
     return await responses[( session_id, index )]
 
+if __name__ == "__main__":
+    uvicorn.run("api:app", host="0.0.0.0", port=8000)
 
+    #  Check whether Milvus is properly configured
 
 
 

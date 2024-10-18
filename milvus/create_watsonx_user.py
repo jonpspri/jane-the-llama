@@ -5,18 +5,23 @@ from time import sleep
 from pymilvus import MilvusClient, MilvusException
 
 script_dir = path.dirname(path.abspath(__file__))
-config = json.load(open(path.join(script_dir, '../config.json'), 'r'))
+
+with open(path.join(script_dir, '../secrets/milvus_root_password'), 'r') as file:
+    milvus_root_password = file.read().rstrip()
+
+with open(path.join(script_dir, '../secrets/jane_milvus_token'), 'r') as file:
+    milvus_username, milvus_password = file.read().rstrip().split(':')
 
 client = MilvusClient(
     # replace with your own Milvus server address
     uri='http://localhost:19530',
-    token=f"root:{config['milvus_root_password']}"
+    token=f"root:{milvus_root_password}"
 )
 
-if not client.describe_user(user_name=config['milvus_username']):
+if not client.describe_user(user_name=milvus_username):
     client.create_user(
-        user_name=config['milvus_username'],
-        password=config['milvus_password']
+        user_name=milvus_username,
+        password=milvus_password
     )
 
 try:
@@ -29,7 +34,7 @@ try:
             )
 except MilvusException:
     client.create_role(role_name="default_rw")
-    sleep(1000)
+    sleep(5)
 
 privileges = json.load(open(path.join(script_dir, 'privileges.json'), 'r'))
 for privilege in privileges:
@@ -41,6 +46,6 @@ for privilege in privileges:
             )
 
 client.grant_role(
-    user_name=config['milvus_username'],
+    user_name=milvus_username,
     role_name="default_rw"
     )

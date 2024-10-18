@@ -14,4 +14,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY ./jane_the_llama ./jane_the_llama
 
-CMD [ "fastapi", "run", "./jane_the_llama/main.py" ]
+CMD [ "fastapi", "run", "./jane_the_llama/api.py" ]

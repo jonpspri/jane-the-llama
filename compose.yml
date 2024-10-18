@@ -1,4 +1,4 @@
-
+---
 services:
   etcd:
     container_name: milvus-etcd
@@ -14,7 +14,7 @@ services:
         target: /etcd
         volume:
           nocopy: true
-    command: etcd -advertise-client-urls=http://127.0.0.1:2379 -listen-client-urls http://0.0.0.0:2379 --data-dir /etcd
+    command: "etcd -advertise-client-urls=http://127.0.0.1:2379 -listen-client-urls http://0.0.0.0:2379 --data-dir /etcd"
     healthcheck:
       test: ["CMD", "etcdctl", "endpoint", "health"]
       interval: 30s
@@ -113,14 +113,20 @@ services:
     ports:
       - "8001:8000"
     secrets:
-      - config
+      - jane_milvus_token
+      - jane_watsonx_apikey
+      - jane_watsonx_project_id
     depends_on:
       - milvus
       - redis
 
 secrets:
-  config:
-    file: ./config.json
+  jane_milvus_token:
+    file: ./secrets/jane_milvus_token
+  jane_watsonx_apikey:
+    file: ./secrets/jane_watsonx_apikey
+  jane_watsonx_project_id:
+    file: ./secrets/jane_watsonx_project_id
 
 networks:
   default:
