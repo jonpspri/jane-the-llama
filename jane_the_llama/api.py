@@ -3,16 +3,19 @@ import uvicorn
 from asyncio import Lock, Task, create_task
 from fastapi import FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import StreamingResponse
 from loguru import logger
 from redis import Redis
-from typing import Self
+from typing import AsyncGenerator, Self
 from uuid import uuid4
 from weakref import WeakValueDictionary
 
 from llama_index.core import VectorStoreIndex
 from llama_index.core.base.llms.types import ChatMessage, MessageRole
-from llama_index.core.chat_engine.types import AgentChatResponse, ChatMode
+from llama_index.core.chat_engine.types import (
+        StreamingAgentChatResponse,
+        ChatMode,
+        )
 from llama_index.embeddings.ibm import WatsonxEmbeddings
 from llama_index.llms.ibm import WatsonxLLM
 from llama_index.vector_stores.milvus import MilvusVectorStore
@@ -41,7 +44,8 @@ llm = WatsonxLLM(
                 url="https://us-south.ml.cloud.ibm.com",
                 apikey=settings.watsonx_apikey,
                 project_id=settings.watsonx_project_id,
-                max_new_tokens=200,
+                max_new_tokens=400,
+                additional_params={ "stop_sequences": [ "\n{" ] }
                 )
 vector_store = MilvusVectorStore(
                 uri=settings.milvus_url,
@@ -71,18 +75,14 @@ class SessionImpl:
     _tasks: dict[str, Task] = {}
 
     @classmethod
-    def four(cls, session: Session):
-        if session.id in cls._instances:
-            impl = cls._instances[session.id]
-            impl.session = session
-        return SessionImpl(session)
+    def get(cls, session_id: str):
+        if session_id in cls._instances:
+            return cls._instances[session_id]
 
-    @classmethod
-    def from_redis(cls, session_id: str):
         session_str = redis.get(session_id)
         assert isinstance(session_str, str)
         session = Session.model_validate_json(session_str)
-        return cls.four(session)
+        return SessionImpl(session)
 
     def __init__(self, session: Session):
         self.session = session
@@ -92,7 +92,6 @@ class SessionImpl:
                     llm=llm,
                     )
         self.responses : dict[int, Task] = {}
-        self.lock = Lock()
 
     @property
     def id(self):
@@ -102,7 +101,21 @@ class SessionImpl:
     def chat_history(self):
         return self.session.chat_history
 
-session_locks = dict[str, Lock]
+    def commit(self):
+        redis.setex(self.id, TIMEOUT, self.session.model_dump_json())
+
+    async def wrapped_gen(self,
+                          chat_message_i: int,
+                          response: StreamingAgentChatResponse,
+                          ) -> AsyncGenerator[str, None]:
+        assert response.achat_stream is not None
+        async for chat_response in response.achat_stream:
+            assert chat_response.delta is not None
+            assert isinstance(chat_response.delta, str)
+
+            self.chat_history[chat_message_i].content = chat_response.message.content
+            yield chat_response.delta
+        self.commit()
 
 app = FastAPI()
 app.add_middleware(
@@ -111,7 +124,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["Location"],
+    expose_headers=["Location", "Jane-Chat-Message-ID"],
 )
 
 @app.post("/sessions", status_code=201)
@@ -135,66 +148,67 @@ def read_session(session_id: str):
 @app.post("/sessions/{session_id}/chat_messages", status_code=201)
 async def add_chat_message(session_id: str, u: ChatMessage, response: Response) -> ChatMessage:
     logger.debug(f"Received new message {u}")
-    session_impl = SessionImpl.from_redis(session_id)
-    async with session_impl.lock:
-        session_impl = SessionImpl.from_redis(session_id)
-        assert session_impl.chat_history is not None
-        i = len(session_impl.chat_history)
+    session_impl = SessionImpl.get(session_id)
+    assert session_impl.chat_history is not None
 
-        if u.role == MessageRole.USER:
-            logger.debug(f"Chat Engine to start for ( {session_id}, {i} )")
-            # TODO:  Use a method in SessionImpl to manage this
-            task_id = str(uuid4())
-            a_chat_history = session_impl.chat_history.copy()
-            SessionImpl._tasks[task_id] = create_task(
-                    session_impl.chat_engine.achat(u.content, a_chat_history)
-                    )
-            u.additional_kwargs["response_task"] = task_id
-            logger.debug(f"Chat Engine started for task {task_id}")
+    chat_message_id = str(uuid4())
+    u.additional_kwargs["chat_message_id"] = chat_message_id
+    response.headers['Jane-Chat-Message-ID'] = chat_message_id
 
-        session_impl.chat_history.append(u)
-        redis.setex(session_impl.id, TIMEOUT, session_impl.session.model_dump_json())
+    if u.role == MessageRole.USER:
+        task_id = str(uuid4())
+        a_chat_history = session_impl.chat_history.copy()
+        SessionImpl._tasks[task_id] = create_task(
+                session_impl.chat_engine.astream_chat(u.content, a_chat_history)
+                )
+        u.additional_kwargs["response_task_id"] = task_id
 
-    message_uri=f"/sessions/{session_id}/chat_messages/{i}"
+    message_index = len(session_impl.chat_history)
+    message_uri=f"/sessions/{session_id}/chat_messages/{message_index}"
+    session_impl.chat_history.append(u)
+    redis.setex(session_impl.id, TIMEOUT, session_impl.session.model_dump_json())
     response.headers['Location']=message_uri
-    logger.debug(f"Returning message {message_uri}")
+    logger.trace(f"Returning message {message_uri}")
+
     return u
 
 @app.get("/sessions/{session_id}/chat_messages")
 def read_chat_messages(session_id: str) -> list[ChatMessage]:
-    session_impl = SessionImpl.from_redis(session_id)
+    session_impl = SessionImpl.get(session_id)
     return session_impl.chat_history
 
 @app.get("/sessions/{session_id}/chat_messages/{index}")
 def read_chat_message(session_id: str, index: int) -> ChatMessage:
-    session_impl = SessionImpl.from_redis(session_id)
+    session_impl = SessionImpl.get(session_id)
 
     # TODO Can I replace this with a try and index out of range?
     if index < 0 or index > len(session_impl.chat_history):
         raise HTTPException(status_code=404, detail=f"Index {index} not found")
     return session_impl.chat_history[index]
 
-@app.get("/sessions/{session_id}/chat_messages/{index}/response",
-         response_class=PlainTextResponse,
-         )
-async def read_chat_message_response(session_id: str, index: int, response: Response) -> str:
-    session_impl = SessionImpl.from_redis(session_id)
-    task_id = session_impl.chat_history[ index ].additional_kwargs[ "response_task" ]
+@app.get("/sessions/{session_id}/chat_messages/{index}/response")
+async def read_chat_message_response(session_id: str, index: int) -> StreamingResponse:
+    session_impl = SessionImpl.get(session_id)
+    task_id = session_impl.chat_history[ index ].additional_kwargs[ "response_task_id" ]
     logger.debug(f"Waiting for a reply for task {task_id}")
     agent_chat_response = await SessionImpl._tasks[ task_id ]
 
-    async with session_impl.lock:
-        session_impl = SessionImpl.from_redis(session_id)
-        assert isinstance(agent_chat_response, AgentChatResponse)
-        cm = ChatMessage( role=MessageRole.ASSISTANT, content=str(agent_chat_response) )
-        cm.additional_kwargs['response_id'] = task_id
-        new_index = len(session_impl.chat_history)
-        session_impl.chat_history.append(cm)
-        redis.setex(session_impl.id, TIMEOUT, session_impl.session.model_dump_json())
+    assert isinstance(agent_chat_response, StreamingAgentChatResponse)
+    cm = ChatMessage( role=MessageRole.ASSISTANT, content=str(agent_chat_response) )
+    cm.additional_kwargs['chat_message_id'] = task_id
+    new_index = len(session_impl.chat_history)
+    session_impl.chat_history.append(cm)
+    session_impl.commit()
 
-    response.headers['Location']=f"/sessions/{session_impl.id}/chat_messages/{new_index}"
-    logger.debug(f"Received response '{agent_chat_response}' ")
-    return str(agent_chat_response)
+    headers = {}
+    headers['Location'] = f"/sessions/{session_impl.id}/chat_messages/{new_index}"
+    headers['Jane-Chat-Message-ID'] = task_id
+    logger.debug("Streaming response...")
+
+    return StreamingResponse(
+            session_impl.wrapped_gen(new_index, agent_chat_response),
+            headers = headers,
+            )
 
 if __name__ == "__main__":
     uvicorn.run("api:app", host="0.0.0.0", port=8000)
