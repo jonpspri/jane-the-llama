@@ -80,6 +80,9 @@ class SessionImpl:
             return cls._instances[session_id]
 
         session_str = redis.get(session_id)
+        if (session_str is None):
+            return None
+
         assert isinstance(session_str, str)
         session = Session.model_validate_json(session_str)
         return SessionImpl(session)
@@ -175,6 +178,8 @@ async def add_chat_message(session_id: str, u: ChatMessage, response: Response) 
 @app.get("/sessions/{session_id}/chat_messages")
 def read_chat_messages(session_id: str) -> list[ChatMessage]:
     session_impl = SessionImpl.get(session_id)
+    if (not session_impl):
+        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
     return session_impl.chat_history
 
 @app.get("/sessions/{session_id}/chat_messages/{index}")
