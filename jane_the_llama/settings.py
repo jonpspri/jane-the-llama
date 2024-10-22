@@ -23,6 +23,8 @@ class JaneSettings(BaseSettings):
     watsonx_apikey: str
     watsonx_project_id: str
 
+    llm_model_id: str = "meta-llama/llama-3-2-90b-vision-instruct",
+
     @property
     def milvus_url(self) -> str:
         return f"http://{self.milvus_host}:{self.milvus_port}"

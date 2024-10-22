@@ -25,6 +25,7 @@ loguru = "^0.7.2"
 
 [tool.poetry.group.dev.dependencies]
 mypy = "^1.12.0"
+podman-compose = "^1.2.0"
 
 [tool.mypy]
 plugins = "pydantic.mypy"

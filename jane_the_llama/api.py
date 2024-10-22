@@ -40,7 +40,7 @@ redis = Redis(host=settings.redis_host,
 
 #  TODO:  Model IDs should be configurable to avoid code migrations
 llm = WatsonxLLM(
-                model_id="meta-llama/llama-3-2-90b-vision-instruct",
+                model_id=settings.llm_model_id,
                 url="https://us-south.ml.cloud.ibm.com",
                 apikey=settings.watsonx_apikey,
                 project_id=settings.watsonx_project_id,
